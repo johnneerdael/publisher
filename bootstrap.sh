@@ -104,7 +104,7 @@ fix_system_configuration() {
 install_minimal_packages() {
     echo "Installing minimal packages..."
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y wget bind9-tools || {
+    DEBIAN_FRONTEND=noninteractive apt-get install -y wget net-tools || {
         echo "Failed to install minimal packages"
         exit 1
     }
