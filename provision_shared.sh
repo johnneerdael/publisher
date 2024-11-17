@@ -250,8 +250,7 @@ function configure_firewall_npa {
         systemctl restart firewalld
     else
         # Ubuntu use ufw as firewall by default
-        apt-get install -y ufw
-        echo y | ufw enable
+        apt-get install -y ufw iptables iptables-persistent
 
         # Configure ufw rules for NPA-specific functionality
         ufw allow to 191.1.1.1/32 proto tcp port 784
@@ -274,6 +273,7 @@ function configure_firewall_npa {
            sudo netfilter-persistent save
         else
            echo "Install iptables-persistent to save rules across reboots."
+        echo y | ufw enable
     fi
 
     echo "Configuration complete!"
@@ -285,7 +285,7 @@ function configure_firewall_npa {
 }
 
 function configure_docker_daemon {
-    echo -e "{\n\"bridge\": \"none\",\n\"iptables\": false\n}" > /etc/docker/daemon.json
+    echo -e "{\n\"bridge\": \"eth0\",\n\"iptables\": true\n}" > /etc/docker/daemon.json
 }
 
 function disable_coredumps {
