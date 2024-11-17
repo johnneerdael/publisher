@@ -1,0 +1,11 @@
+[Unit]
+Description=Launch NPA Publisher wizard on boot
+After=docker.service
+
+[Service]
+Type=simple
+ExecStart=/home/ubuntu/npa_publisher_wizard -auto
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
