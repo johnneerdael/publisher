@@ -12,24 +12,24 @@ if [ "$PUBLISHER_IMAGE_TAG" = "" ] ; then
 fi
 
 if [ "$PUBLISHER_USER" = "" ] ; then
-    INSTALL_USER=$(logname)
+    USER=$(logname)
 else
-    INSTALL_USER=$PUBLISHER_USER
+    USER=$PUBLISHER_USER
 fi
 
-if [ "$INSTALL_USER" = "" ] ; then
+if [ "$USER" = "" ] ; then
     echo "No username specificed. Exit!"
     exit 1
 fi
 
-if [ "$INSTALL_USER" = "root" ] ; then
+if [ "$USER" = "root" ] ; then
     echo "Do not use the root to install the publisher. Exit!"
     exit 1
 fi
 
-HOME=`eval echo ~$INSTALL_USER`
+HOME=`eval echo ~$USER`
 if [ "$HOME" = "" ] ; then
-    echo "Can not find the $INSTALL_USER home directory. Exit!"
+    echo "Can not find the $USER home directory. Exit!"
     exit 1
 fi
 
@@ -167,7 +167,7 @@ function hardening_ssh {
         # 5.3.22 Ensure SSH MaxSessions is limited to 10
         # Set TCPKeepAlive to no
         # Set ClientAliveCountMax to 1
-        echo "AllowUsers $INSTALL_USER" >> /etc/ssh/sshd_config
+        echo "AllowUsers $USER" >> /etc/ssh/sshd_config
         sed -i 's/^#*MaxAuthTries [0-9]\+/MaxAuthTries 2/' /etc/ssh/sshd_config
         sed -i 's/^#*X11Forwarding yes/X11Forwarding no/' /etc/ssh/sshd_config
         echo "HostbasedAuthentication no" >> /etc/ssh/sshd_config
