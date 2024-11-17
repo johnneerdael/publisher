@@ -251,6 +251,7 @@ function configure_firewall_npa {
     else
         # Ubuntu use ufw as firewall by default
         apt-get install -y ufw iptables iptables-persistent
+        update-alternatives --remove iptables /usr/sbin/iptables-legacy
 
         # Configure ufw rules for NPA-specific functionality
         ufw allow to 191.1.1.1/32 proto tcp port 784
