@@ -17,7 +17,7 @@ function log_progress() {
 
 function set_stage() {
     local stage="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S'
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "$stage" > "$STAGE_FILE"
     log_progress "Setting stage to: $stage"
 }
