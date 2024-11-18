@@ -6,6 +6,49 @@ set -e
 PROGRESS_FILE="/var/log/upgrade_progress.log"
 SERVICE_FILE="/etc/systemd/system/ubuntu-upgrade.service"
 
+# Add these status tracking functions at the top
+STAGE_FILE="/var/log/upgrade_stage"
+
+function set_stage() {
+    echo "$1" > "$STAGE_FILE"
+}
+
+function get_stage() {
+    if [ -f "$STAGE_FILE" ]; then
+        cat "$STAGE_FILE"
+    else
+        echo "init"
+    fi
+}
+
+function handle_pending_reboot() {
+    if [ -f /var/run/reboot-required ] || needs_reboot; then
+        echo "System requires a reboot before continuing..."
+        set_stage "pending_reboot"
+        # Ensure our script runs again after reboot
+        create_systemd_service
+        reboot
+        exit 0
+    fi
+}
+
+function needs_reboot() {
+    # Check various conditions that might require a reboot
+    if dpkg -l | grep -q "^rc.*linux-image-"; then
+        return 0
+    fi
+    if [ -f /var/lib/ubuntu-release-upgrader/release-upgrade-available ]; then
+        return 0
+    fi
+    # Check if any services need restart
+    if [ -x "$(command -v needrestart)" ]; then
+        if needrestart -b | grep -q "NEEDRESTART-KSTA: 1"; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 # Check Ubuntu version and determine upgrade path
 check_ubuntu_version() {
     local version=$(lsb_release -rs)
@@ -135,31 +178,54 @@ install_minimal_packages() {
     }
 }
 
-perform_upgrade() {
-    echo "Performing system upgrade..."
-    apt-get update
-    apt-get dist-upgrade -y
+# Modify the perform_upgrade function
+function perform_upgrade() {
+    local current_stage=$(get_stage)
     
-    local version=$(lsb_release -rs)
-    case $version in
-        "20.04")
-            echo "Upgrading from 20.04 to 22.04..."
-            sed -i 's/Prompt=lts/Prompt=normal/' /etc/update-manager/release-upgrades
-            do-release-upgrade -f DistUpgradeViewNonInteractive
-            check_reboot
+    case $current_stage in
+        "init"|"")
+            echo "Starting initial upgrade..."
+            apt-get update
+            apt-get dist-upgrade -y
+            handle_pending_reboot
+            set_stage "base_upgrade_complete"
             ;;
-        "22.04")
-            echo "Upgrading from 22.04 to 24.04..."
-            # Only proceed if 24.04 upgrade is available
-            if do-release-upgrade -c; then
-                do-release-upgrade -f DistUpgradeViewNonInteractive
-                check_reboot
-            else
-                echo "Upgrade to 24.04 not yet available"
-            fi
+            
+        "base_upgrade_complete")
+            echo "Proceeding with release upgrade..."
+            local version=$(lsb_release -rs)
+            case $version in
+                "20.04")
+                    echo "Upgrading from 20.04 to 22.04..."
+                    sed -i 's/Prompt=lts/Prompt=normal/' /etc/update-manager/release-upgrades
+                    do-release-upgrade -f DistUpgradeViewNonInteractive
+                    handle_pending_reboot
+                    set_stage "release_upgrade_complete"
+                    ;;
+                "22.04")
+                    if do-release-upgrade -c; then
+                        echo "Upgrading from 22.04 to 24.04..."
+                        do-release-upgrade -f DistUpgradeViewNonInteractive
+                        handle_pending_reboot
+                        set_stage "release_upgrade_complete"
+                    else
+                        echo "Upgrade to 24.04 not yet available"
+                        set_stage "complete"
+                    fi
+                    ;;
+            esac
             ;;
-        "24.04")
-            echo "Already at 24.04 - no upgrade needed"
+            
+        "release_upgrade_complete")
+            echo "Performing final system updates..."
+            apt-get update
+            apt-get dist-upgrade -y
+            handle_pending_reboot
+            set_stage "complete"
+            ;;
+            
+        "complete")
+            echo "Upgrade process completed successfully"
             ;;
     esac
 }
@@ -197,13 +263,17 @@ check_netskope_provisioning() {
     return 1
 }
 
-# Modify the main() function to include the new checks
-main() {
-    # Check if upgrade is needed
+# Modify the main function
+function main() {
+    local current_stage=$(get_stage)
+    
+    if [ "$current_stage" = "pending_reboot" ]; then
+        echo "Resuming after reboot..."
+        set_stage "base_upgrade_complete"
+    fi
+
     if ! check_ubuntu_version; then
         echo "No OS upgrade needed."
-        
-        # Check if we need to migrate to nftables
         if ! update-alternatives --get-selections | grep -q "iptables-nft"; then
             echo "Migrating to iptables-nft..."
             apt-get install -y iptables-nft
@@ -211,8 +281,6 @@ main() {
             update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
             update-alternatives --set arptables /usr/sbin/arptables-nft
             update-alternatives --set ebtables /usr/sbin/ebtables-nft
-            
-            # Reconfigure firewall with nftables
             configure_firewall_npa
         fi
         
@@ -223,19 +291,21 @@ main() {
             exit 0
         fi
         
-        echo "Proceeding with post-upgrade tasks only."
         post_upgrade_tasks
         clean_up
         exit 0
     fi
 
-    create_systemd_service
     fix_system_configuration
     install_minimal_packages
     perform_upgrade
-    fix_dns_configuration
-    post_upgrade_tasks
-    clean_up
+    
+    if [ "$(get_stage)" = "complete" ]; then
+        fix_dns_configuration
+        post_upgrade_tasks
+        clean_up
+        rm -f "$STAGE_FILE"
+    fi
 }
 
 main
