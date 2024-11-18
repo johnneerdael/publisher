@@ -12,7 +12,7 @@ if [ "$PUBLISHER_IMAGE_TAG" = "" ] ; then
 fi
 
 if [ "$PUBLISHER_USER" = "" ] ; then
-    USER=$(logname)
+    USER=ubuntu
 else
     USER=$PUBLISHER_USER
 fi
