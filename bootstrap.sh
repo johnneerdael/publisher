@@ -9,8 +9,17 @@ SERVICE_FILE="/etc/systemd/system/ubuntu-upgrade.service"
 # Add these status tracking functions at the top
 STAGE_FILE="/var/log/upgrade_stage"
 
+function log_progress() {
+    local message="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] $message" | tee -a "$PROGRESS_FILE"
+}
+
 function set_stage() {
-    echo "$1" > "$STAGE_FILE"
+    local stage="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$stage" > "$STAGE_FILE"
+    log_progress "Setting stage to: $stage"
 }
 
 function get_stage() {
@@ -23,15 +32,27 @@ function get_stage() {
 
 function handle_pending_reboot() {
     if [ -f /var/run/reboot-required ] || needs_reboot; then
-        echo "System requires a reboot before continuing..."
+        log_progress "System requires a reboot before continuing..."
         set_stage "pending_reboot"
+        
         # Ensure our script runs again after reboot
         create_systemd_service
+        
         # Force sync to ensure all writes are complete
         sync
-        # Schedule a reboot in 1 minute to allow systemd to complete setup
+        
+        # Set a flag file to indicate we initiated the reboot
+        touch /var/run/upgrade-reboot-initiated
+        
+        log_progress "Scheduling reboot in 30 seconds..."
         shutdown -r +1 "System will reboot in 1 minute to continue upgrade process..."
-        exit 0
+        
+        # Wait for the reboot to happen
+        sleep 70
+        
+        # If we get here, something went wrong with the reboot
+        log_progress "ERROR: System did not reboot as expected"
+        exit 1
     fi
 }
 
@@ -75,10 +96,6 @@ check_ubuntu_version() {
             exit 1
             ;;
     esac
-}
-
-log_step() {
-    echo "$1" > "$PROGRESS_FILE"
 }
 
 resume_from() {
@@ -190,35 +207,36 @@ install_minimal_packages() {
 # Modify the perform_upgrade function
 function perform_upgrade() {
     local current_stage=$(get_stage)
+    log_progress "Performing upgrade from stage: $current_stage"
     
     case $current_stage in
         "init"|"")
-            echo "Starting initial upgrade..."
-            apt-get update
-            apt-get dist-upgrade -y
+            log_progress "Starting initial upgrade..."
+            DEBIAN_FRONTEND=noninteractive apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y
             handle_pending_reboot
             set_stage "base_upgrade_complete"
             ;;
             
         "base_upgrade_complete")
-            echo "Proceeding with release upgrade..."
+            log_progress "Proceeding with release upgrade..."
             local version=$(lsb_release -rs)
             case $version in
                 "20.04")
-                    echo "Upgrading from 20.04 to 22.04..."
+                    log_progress "Upgrading from 20.04 to 22.04..."
                     sed -i 's/Prompt=lts/Prompt=normal/' /etc/update-manager/release-upgrades
-                    do-release-upgrade -f DistUpgradeViewNonInteractive
+                    DEBIAN_FRONTEND=noninteractive do-release-upgrade -f DistUpgradeViewNonInteractive
                     handle_pending_reboot
                     set_stage "release_upgrade_complete"
                     ;;
                 "22.04")
                     if do-release-upgrade -c; then
-                        echo "Upgrading from 22.04 to 24.04..."
-                        do-release-upgrade -f DistUpgradeViewNonInteractive
+                        log_progress "Upgrading from 22.04 to 24.04..."
+                        DEBIAN_FRONTEND=noninteractive do-release-upgrade -f DistUpgradeViewNonInteractive
                         handle_pending_reboot
                         set_stage "release_upgrade_complete"
                     else
-                        echo "Upgrade to 24.04 not yet available"
+                        log_progress "Upgrade to 24.04 not yet available"
                         set_stage "complete"
                     fi
                     ;;
@@ -226,15 +244,15 @@ function perform_upgrade() {
             ;;
             
         "release_upgrade_complete")
-            echo "Performing final system updates..."
-            apt-get update
-            apt-get dist-upgrade -y
+            log_progress "Performing final system updates..."
+            DEBIAN_FRONTEND=noninteractive apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y
             handle_pending_reboot
             set_stage "complete"
             ;;
             
         "complete")
-            echo "Upgrade process completed successfully"
+            log_progress "Upgrade process completed successfully"
             ;;
     esac
 }
@@ -272,13 +290,116 @@ check_netskope_provisioning() {
     return 1
 }
 
+# Add this function before the main() function
+function configure_firewall_npa() {
+    # Ubuntu section for nftables
+    apt-get install -y nftables ufw iptables-nft
+    
+    # Ensure nftables is enabled and started
+    systemctl enable nftables
+    systemctl start nftables
+    
+    # Create the base nftables configuration
+    cat > /etc/nftables.conf <<EOF
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table ip nat {
+    chain POSTROUTING {
+        type nat hook postrouting priority 100;
+        
+        # SNAT rules for CGNAT
+        ip saddr 100.64.0.0/10 counter masquerade
+        ip saddr 191.1.0.0/16 counter masquerade
+    }
+}
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        
+        # Allow established/related connections
+        ct state established,related accept
+        
+        # Allow loopback
+        iifname "lo" accept
+        
+        # Block invalid loopback traffic
+        ip saddr 127.0.0.0/8 iifname != "lo" drop
+        ip6 saddr ::1 iifname != "lo" drop
+        
+        # Allow SSH
+        tcp dport 22 accept
+        
+        # NPA-specific rules
+        ip daddr 191.1.1.1 tcp dport 784 accept
+        ip daddr 191.1.1.1 udp dport 785 accept
+        
+        # TUN interface rules
+        iifname "tun0" tcp dport 53 accept
+        iifname "tun0" udp dport 53 accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        ct state established,related accept
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+EOF
+
+    # Apply the nftables configuration
+    nft -f /etc/nftables.conf
+    
+    # Ensure nftables rules persist across reboots
+    systemctl enable nftables
+    
+    # Configure UFW to use nftables backend
+    update-alternatives --set iptables /usr/sbin/iptables-nft
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
+    update-alternatives --set arptables /usr/sbin/arptables-nft
+    update-alternatives --set ebtables /usr/sbin/ebtables-nft
+    
+    # Configure basic UFW rules
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp
+    ufw allow to 191.1.1.1/32 proto tcp port 784
+    ufw allow to 191.1.1.1/32 proto udp port 785
+    
+    echo y | ufw enable
+    ufw reload
+
+    echo "Firewall configuration complete!"
+}
+
 # Modify the main function
 function main() {
-    local current_stage=$(get_stage)
+    # Ensure we're running as root
+    if [ "$EUID" -ne 0 ]; then
+        echo "Please run as root"
+        exit 1
+    }
+
+    # Initialize logging
+    log_progress "Starting upgrade process"
     
-    if [ "$current_stage" = "pending_reboot" ]; then
-        echo "Resuming after reboot..."
-        set_stage "base_upgrade_complete"
+    local current_stage=$(get_stage)
+    log_progress "Current stage: $current_stage"
+    
+    # Check if we're resuming after a reboot
+    if [ -f /var/run/upgrade-reboot-initiated ]; then
+        log_progress "Resuming after reboot"
+        rm -f /var/run/upgrade-reboot-initiated
+        if [ "$current_stage" = "pending_reboot" ]; then
+            log_progress "Continuing from previous stage"
+            set_stage "base_upgrade_complete"
+            current_stage="base_upgrade_complete"
+        fi
     fi
 
     if ! check_ubuntu_version; then
