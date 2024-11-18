@@ -73,12 +73,12 @@ function needs_reboot() {
     return 1
 }
 
-# Check Ubuntu version and determine upgrade path
+# Fix the check_ubuntu_version function
 check_ubuntu_version() {
     local version=$(lsb_release -rs)
     echo "Current Ubuntu version: $version"
     
-    case $version in
+    case "$version" in
         "20.04")
             echo "Ubuntu 20.04 detected - will upgrade to 22.04"
             return 0
