@@ -44,14 +44,14 @@ function handle_pending_reboot() {
         # Set a flag file to indicate we initiated the reboot
         touch /var/run/upgrade-reboot-initiated
         
-        log_progress "Scheduling reboot in 30 seconds..."
-        shutdown -r +1 "System will reboot in 1 minute to continue upgrade process..."
+        log_progress "Initiating immediate reboot..."
         
-        # Wait for the reboot to happen
-        sleep 70
+        # Force immediate reboot
+        systemctl reboot -f
         
-        # If we get here, something went wrong with the reboot
-        log_progress "ERROR: System did not reboot as expected"
+        # Should never reach here, but just in case
+        sleep 10
+        reboot -f
         exit 1
     fi
 }
