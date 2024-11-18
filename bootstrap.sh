@@ -6,6 +6,31 @@ set -e
 PROGRESS_FILE="/var/log/upgrade_progress.log"
 SERVICE_FILE="/etc/systemd/system/ubuntu-upgrade.service"
 
+# Check Ubuntu version and determine upgrade path
+check_ubuntu_version() {
+    local version=$(lsb_release -rs)
+    echo "Current Ubuntu version: $version"
+    
+    case $version in
+        "20.04")
+            echo "Ubuntu 20.04 detected - will upgrade to 22.04"
+            return 0
+            ;;
+        "22.04")
+            echo "Ubuntu 22.04 detected - will upgrade to 24.04"
+            return 0
+            ;;
+        "24.04")
+            echo "Ubuntu 24.04 detected - no upgrade needed"
+            return 1
+            ;;
+        *)
+            echo "Unsupported Ubuntu version: $version"
+            exit 1
+            ;;
+    esac
+}
+
 log_step() {
     echo "$1" > "$PROGRESS_FILE"
 }
@@ -114,15 +139,29 @@ perform_upgrade() {
     echo "Performing system upgrade..."
     apt-get update
     apt-get dist-upgrade -y
+    
     local version=$(lsb_release -rs)
-    if [[ "$version" == "20.04" ]]; then
-        sed -i 's/Prompt=lts/Prompt=normal/' /etc/update-manager/release-upgrades
-        do-release-upgrade -f DistUpgradeViewNonInteractive
-        check_reboot
-    elif [[ "$version" == "22.04" ]]; then
-        do-release-upgrade -f DistUpgradeViewNonInteractive
-        check_reboot
-    fi
+    case $version in
+        "20.04")
+            echo "Upgrading from 20.04 to 22.04..."
+            sed -i 's/Prompt=lts/Prompt=normal/' /etc/update-manager/release-upgrades
+            do-release-upgrade -f DistUpgradeViewNonInteractive
+            check_reboot
+            ;;
+        "22.04")
+            echo "Upgrading from 22.04 to 24.04..."
+            # Only proceed if 24.04 upgrade is available
+            if do-release-upgrade -c; then
+                do-release-upgrade -f DistUpgradeViewNonInteractive
+                check_reboot
+            else
+                echo "Upgrade to 24.04 not yet available"
+            fi
+            ;;
+        "24.04")
+            echo "Already at 24.04 - no upgrade needed"
+            ;;
+    esac
 }
 
 post_upgrade_tasks() {
@@ -144,7 +183,52 @@ clean_up() {
     cleanup_systemd_service
 }
 
+# Add this function after check_ubuntu_version()
+check_netskope_provisioning() {
+    # Check for common Netskope publisher indicators
+    if [ -f "$HOME/resources/.password_expiry_disabled" ] && \
+       [ -d "$HOME/resources" ] && \
+       [ -d "$HOME/logs" ] && \
+       docker images | grep -q "new_edge_access"; then
+        echo "Netskope provisioning detected"
+        return 0
+    fi
+    echo "No existing Netskope provisioning detected"
+    return 1
+}
+
+# Modify the main() function to include the new checks
 main() {
+    # Check if upgrade is needed
+    if ! check_ubuntu_version; then
+        echo "No OS upgrade needed."
+        
+        # Check if we need to migrate to nftables
+        if ! update-alternatives --get-selections | grep -q "iptables-nft"; then
+            echo "Migrating to iptables-nft..."
+            apt-get install -y iptables-nft
+            update-alternatives --set iptables /usr/sbin/iptables-nft
+            update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
+            update-alternatives --set arptables /usr/sbin/arptables-nft
+            update-alternatives --set ebtables /usr/sbin/ebtables-nft
+            
+            # Reconfigure firewall with nftables
+            configure_firewall_npa
+        fi
+        
+        if check_netskope_provisioning; then
+            echo "Skipping full provisioning, only updating necessary components..."
+            fix_dns_configuration
+            clean_up
+            exit 0
+        fi
+        
+        echo "Proceeding with post-upgrade tasks only."
+        post_upgrade_tasks
+        clean_up
+        exit 0
+    fi
+
     create_systemd_service
     fix_system_configuration
     install_minimal_packages

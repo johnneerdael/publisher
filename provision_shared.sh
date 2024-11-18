@@ -34,57 +34,41 @@ if [ "$HOME" = "" ] ; then
 fi
 
 function is_cent_os {
-    [ -f /etc/redhat-release ]
+    false  # Always return false since we no longer support CentOS
 }
 
 function update_packages {
-    if is_cent_os ; then
-        yum update -y
-    else
-        apt-get -y update
-        apt-get -y upgrade
-    fi
+    apt-get -y update
+    apt-get -y upgrade
 }
 
 function install_docker_ce {
-    if is_cent_os ; then
-        # Install Docker CE on CentOS
-        yum install -y yum-utils device-mapper-persistent-data lvm2 
-        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-        yum install -y docker-ce
-        systemctl enable docker
-        usermod -a -G docker $USER
-        service docker start
+    # Install prerequisites for APT repository management
+    apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+
+    # Add Docker's official GPG key
+    if [ "$(lsb_release -rs)" = "24.04" ]; then
+        # Proper method for Ubuntu 24.04+
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
     else
-        # Install prerequisites for APT repository management
-        apt-get install -y apt-transport-https ca-certificates curl software-properties-common
-
-        # Add Docker's official GPG key
-        if [ "$(lsb_release -rs)" = "24.04" ]; then
-            # Proper method for Ubuntu 24.04+
-            echo "Using modern method for Ubuntu 24.04+"
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-        else
-            # Legacy method for older versions
-            echo "Using legacy method for pre-24.04 Ubuntu"
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
-            add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-        fi
-
-        # Update and install Docker
-        apt-get update
-        apt-get install -y docker-ce
-
-        # Ensure Docker is running
-        while ! [[ "$(service docker status)" =~ "running" ]]; do sleep 1; done
-        groupadd docker
-
-        # Enable the user to run Docker commands
-        sudo usermod -aG docker $USER
-        sudo systemctl enable docker.service
-        sudo systemctl enable containerd.service
+        # Legacy method for pre-24.04 Ubuntu
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+        add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
     fi
+
+    # Update and install Docker
+    apt-get update
+    apt-get install -y docker-ce
+
+    # Ensure Docker is running
+    while ! [[ "$(service docker status)" =~ "running" ]]; do sleep 1; done
+    groupadd docker
+
+    # Enable the user to run Docker commands
+    sudo usermod -aG docker $USER
+    sudo systemctl enable docker.service
+    sudo systemctl enable containerd.service
 }
 
 function load_publisher_image {
@@ -202,88 +186,105 @@ function hardening_disable_ctrl_alt_del {
 
 # Remove Linux firmware
 function hardening_remove_linux_firmware {
-    if is_cent_os ; then
-        yum remove linux-firmware -y
-    else
-        kernel_version=$(uname -r)
-        distro=$(echo "$kernel_version" | awk -F '-' '{print $NF}')
-        if [ "$distro" != "generic" ] ; then
-                apt-get remove linux-firmware -y
-        fi
+    kernel_version=$(uname -r)
+    distro=$(echo "$kernel_version" | awk -F '-' '{print $NF}')
+    if [ "$distro" != "generic" ] ; then
+        apt-get remove linux-firmware -y
     fi
 }
 
 function hardening_install_cracklib {
-    if is_cent_os ; then
-        yum install cracklib -y
-    else
-        apt-get install cracklib-runtime -y
-    fi
+    apt-get install cracklib-runtime -y
 }
 
 function install_network_utils {
-    if is_cent_os ; then
-        yum install -y net-tools bind-utils
-    else
-        apt-get install -y net-tools bind9-utils
-    fi
+    apt-get install -y net-tools bind9-utils
 }
 
 function configure_firewall_npa {
-    if is_cent_os; then
-        yum install -y firewalld
-        systemctl enable firewalld
-        systemctl start firewalld
+    # Ubuntu section for nftables
+    apt-get install -y nftables ufw iptables-nft
+    
+    # Ensure nftables is enabled and started
+    systemctl enable nftables
+    systemctl start nftables
+    
+    # Create the base nftables configuration
+    cat > /etc/nftables.conf <<EOF
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table ip nat {
+    chain POSTROUTING {
+        type nat hook postrouting priority 100;
         
-        # Configure firewalld for NPA-specific rules
-        firewall-cmd --reload
-        firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" destination address="191.1.1.1/32" port protocol="tcp" port="784" accept'
-        firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" destination address="191.1.1.1/32" port protocol="udp" port="785" accept'
-        firewall-cmd --permanent --new-zone=publisher_tunnel 
-        firewall-cmd --permanent --zone=publisher_tunnel --add-interface=tun0
-        firewall-cmd --permanent --zone=publisher_tunnel --add-rich-rule='rule family="ipv4" port protocol="tcp" port="53" accept'
-        firewall-cmd --permanent --zone=publisher_tunnel --add-rich-rule='rule family="ipv4" port protocol="udp" port="53" accept'
-        firewall-cmd --permanent --zone=publisher_tunnel --add-rich-rule='rule family="ipv4" destination address="191.1.1.1/32" port protocol="tcp" port="784" accept'
-        firewall-cmd --permanent --zone=publisher_tunnel --add-rich-rule='rule family="ipv4" destination address="191.1.1.1/32" port protocol="udp" port="785" accept'
-        firewall-cmd --reload
+        # SNAT rules for CGNAT
+        ip saddr 100.64.0.0/10 counter masquerade
+        ip saddr 191.1.0.0/16 counter masquerade
+    }
+}
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
         
-        systemctl restart firewalld
-    else
-        # Ubuntu use ufw as firewall by default
-        apt-get install -y ufw iptables iptables-persistent
-        update-alternatives --remove iptables /usr/sbin/iptables-legacy
-
-        # Configure ufw rules for NPA-specific functionality
-        ufw allow to 191.1.1.1/32 proto tcp port 784
-        ufw allow to 191.1.1.1/32 proto udp port 785
-        ufw allow in on tun0 to any port 53 proto tcp
-        ufw allow in on tun0 to any port 53 proto udp
-        ufw allow 22/tcp
-        ufw allow in on lo
-        ufw deny in from 127.0.0.0/8
-        ufw deny in from ::1
-        ufw reload
+        # Allow established/related connections
+        ct state established,related accept
         
-        # Step 3: Apply SNAT for CGNAT source range
-        echo "Applying SNAT for CGNAT source range..."
-        iptables -t nat -A POSTROUTING -s 100.64.0.0/10 -j MASQUERADE
-        iptables -t nat -A POSTROUTING -s 191.1.0.0/16 -j MASQUERADE
+        # Allow loopback
+        iifname "lo" accept
+        
+        # Block invalid loopback traffic
+        ip saddr 127.0.0.0/8 iifname != "lo" drop
+        ip6 saddr ::1 iifname != "lo" drop
+        
+        # Allow SSH
+        tcp dport 22 accept
+        
+        # NPA-specific rules
+        ip daddr 191.1.1.1 tcp dport 784 accept
+        ip daddr 191.1.1.1 udp dport 785 accept
+        
+        # TUN interface rules
+        iifname "tun0" tcp dport 53 accept
+        iifname "tun0" udp dport 53 accept
+    }
 
-        # Step 4: Persist iptables rules
-        if command -v netfilter-persistent &> /dev/null; then
-           echo "Saving iptables rules for persistence..."
-           sudo netfilter-persistent save
-        else
-           echo "Install iptables-persistent to save rules across reboots."
-        echo y | ufw enable
-    fi
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        ct state established,related accept
+    }
 
-    echo "Configuration complete!"
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+EOF
 
-    echo "COMMIT" >> /etc/ufw/before.rules
-    # Reload ufw to apply the changes
+    # Apply the nftables configuration
+    nft -f /etc/nftables.conf
+    
+    # Ensure nftables rules persist across reboots
+    systemctl enable nftables
+    
+    # Configure UFW to use nftables backend
+    update-alternatives --set iptables /usr/sbin/iptables-nft
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
+    update-alternatives --set arptables /usr/sbin/arptables-nft
+    update-alternatives --set ebtables /usr/sbin/ebtables-nft
+    
+    # Configure basic UFW rules
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp
+    ufw allow to 191.1.1.1/32 proto tcp port 784
+    ufw allow to 191.1.1.1/32 proto udp port 785
+    
+    echo y | ufw enable
     ufw reload
-    fi
+
+    echo "Firewall configuration complete!"
 }
 
 function configure_docker_daemon {
@@ -300,52 +301,67 @@ function create_host_os_info_cronjob {
 }
 
 function create_auto_upgrade_cronjob {
-    if is_cent_os ; then
-        echo "We don't support the publisher auto upgrade for the CentOS"
-    else
-        echo "*/1 * * * * root cd $HOME/resources && ./npa_publisher_auto_upgrade.sh" > /etc/cron.d/npa_publisher_auto_upgrade
-    fi
+    echo "*/1 * * * * root cd $HOME/resources && ./npa_publisher_auto_upgrade.sh" > /etc/cron.d/npa_publisher_auto_upgrade
 }
 
 function disable_systemd_resolved {
-    if is_cent_os ; then
-        echo "No need to bypass the systemd-resolved on CentOS"
-    else
-        rm -f /etc/resolv.conf
-        ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf
-    fi
+    rm -f /etc/resolv.conf
+    ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf
 }
 
 function disable_release_motd {
-    if is_cent_os ; then
-        echo "No need to disable release motd on CentOS"
-    else
-        chmod 644 /etc/update-motd.d/91-release-upgrade
-    fi
+    chmod 644 /etc/update-motd.d/91-release-upgrade
 }
 
 function leave_password_expiry_disabled_flag {
-    if is_cent_os ; then
-        echo "No need to leave the password expiry policy flag"
-    else
-        echo "disabled by default" > $HOME/resources/.password_expiry_disabled
-    fi
+    echo "disabled by default" > $HOME/resources/.password_expiry_disabled
 }
 
 function remove_unnecessary_utilities {
-    if is_cent_os ; then
-        echo "Skip to remove the unnecessary utilities"
-        /home/ubuntu/npa_publisher_wizard
-    else
-        apt-get -y remove iputils-ping 
-        apt-get -y remove wget
-        apt-get -y remove curl
-        apt-get -y remove netcat-openbsd
-        snap remove lxd
-        /home/ubuntu/npa_publisher_wizard
-    fi
+    apt-get -y remove iputils-ping 
+    apt-get -y remove wget
+    apt-get -y remove curl
+    apt-get -y remove netcat-openbsd
+    snap remove lxd
+    /home/ubuntu/npa_publisher_wizard
 }
 
+function check_existing_installation() {
+    if [ -f "$HOME/resources/.password_expiry_disabled" ] && \
+       [ -d "$HOME/resources" ] && \
+       [ -d "$HOME/logs" ] && \
+       docker images | grep -q "new_edge_access"; then
+        echo "Existing Netskope installation detected"
+        
+        # Check if we need to migrate to nftables
+        if ! update-alternatives --get-selections | grep -q "iptables-nft"; then
+            echo "Migrating to iptables-nft..."
+            apt-get install -y iptables-nft
+            update-alternatives --set iptables /usr/sbin/iptables-nft
+            update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
+            update-alternatives --set arptables /usr/sbin/arptables-nft
+            update-alternatives --set ebtables /usr/sbin/ebtables-nft
+            
+            # Reconfigure firewall with nftables
+            configure_firewall_npa
+        else
+            echo "iptables-nft already configured"
+        fi
+        
+        return 0
+    fi
+    return 1
+}
+
+if check_existing_installation; then
+    echo "Skipping full provisioning as Netskope is already installed"
+    # Only perform necessary updates
+    update_packages
+    configure_firewall_npa  # This will handle nftables migration if needed
+    exit 0
+fi
+
+# Rest of the original execution flow for new installations
 update_packages
 install_network_utils
 configure_firewall_npa
