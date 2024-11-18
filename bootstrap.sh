@@ -46,12 +46,16 @@ function handle_pending_reboot() {
         
         log_progress "Initiating immediate reboot..."
         
-        # Force immediate reboot
-        systemctl reboot -f
+        # Kill any running upgrade processes
+        pkill -f do-release-upgrade || true
         
-        # Should never reach here, but just in case
-        sleep 10
+        # Force immediate reboot using systemd
+        systemctl --force --force reboot
+        
+        # If systemctl fails, try direct reboot
         reboot -f
+        
+        # Should never get here
         exit 1
     fi
 }
@@ -113,21 +117,24 @@ create_systemd_service() {
 Description=Resume Ubuntu Upgrade After Reboot
 After=network-online.target
 Wants=network-online.target
+DefaultDependencies=no
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/bash -c 'chmod +x /home/ubuntu/bootstrap.sh && /home/ubuntu/bootstrap.sh'
+Type=simple
+ExecStart=/home/ubuntu/bootstrap.sh
+Restart=no
+TimeoutStartSec=1800
 StandardOutput=journal
 StandardError=journal
-TimeoutStartSec=1800
+Environment=DEBIAN_FRONTEND=noninteractive
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    chmod 755 "$SERVICE_FILE"
     systemctl daemon-reload
     systemctl enable ubuntu-upgrade
-    systemctl start ubuntu-upgrade
 }
 
 cleanup_systemd_service() {
