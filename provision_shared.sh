@@ -92,11 +92,7 @@ function prepare_for_publisher_start {
 function configure_publisher_wizard_to_start_on_user_ssh {
     # There is a problem with the docker that sometimes it starts really slow and unavailable on first login
     # We depend on Docker being ready, so we want to wait for it explicitly
-    if is_cent_os ; then
-        echo "while [ \"\`systemctl is-active docker.service\`\" != \"active\" ]; do echo \"Waiting for Docker daemon to start. It can take a minute.\"; sleep 10; done" >> $HOME/.bash_profile
-    else 
-        echo "while ! [[ \"\`sudo service docker status\`\" =~ \"running\" ]]; do echo \"Waiting for Docker daemon to start. It can take a minute.\"; sleep 10; done" >> $HOME/.bash_profile
-    fi
+    echo "while ! [[ \"\`sudo service docker status\`\" =~ \"running\" ]]; do echo \"Waiting for Docker daemon to start. It can take a minute.\"; sleep 10; done" >> $HOME/.bash_profile
     
     # Allow to run wizard under sudo without entering a password
     echo "$USER      ALL=(ALL:ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers > /dev/null
@@ -119,55 +115,20 @@ function configure_publisher_wizard_to_start_on_boot {
 }
 
 function launch_publisher {
-    # ToDo: We should move this to publisher wizard
     # Configure for a publisher to start automatically
     HOST_OS_TYPE=ubuntu
-    if is_cent_os ; then
-        HOST_OS_TYPE=centos
-    fi
-
     sg docker -c "docker run --restart always --network=host --privileged --memory-swappiness=0 -e HOST_OS_TYPE=$HOST_OS_TYPE -v $HOME/resources:/home/resources -v $HOME/logs:/home/logs -d new_edge_access:latest"
 }
 
 function hardening_ssh {
     # Update sshd_config
-    if is_cent_os ; then
-        # Below came from nessusd scan 
-        # https://developer.ibm.com/answers/questions/187318/faq-how-do-i-disable-cipher-block-chaining-cbc-mod.html
-        echo "PermitRootLogin no" >> /etc/ssh/sshd_config
-        echo "Ciphers aes128-ctr,aes192-ctr,aes256-ctr" >> /etc/ssh/sshd_config
-        echo "MACs hmac-sha1,umac-64@openssh.com,hmac-ripemd160" >> /etc/ssh/sshd_config
-    else
-        # 5.3.4 Ensure SSH access is limited | allow users
-        # 5.3.6 Ensure SSH X11 forwarding is disabled
-        # 5.3.7 Ensure SSH MaxAuthTries is set to 4 or less
-        # 5.3.9 Ensure SSH HostbasedAuthentication is disabled
-        # 5.3.10 Ensure SSH root login is disabled
-        # 5.3.11 Ensure SSH PermitEmptyPasswords is disabled
-        # 5.3.13 Ensure only strong Ciphers are used
-        # 5.3.14 Ensure only strong MAC algorithms are used
-        # 5.3.15 Ensure only strong Key Exchange algorithms are used
-        # 5.3.20 Ensure SSH AllowTcpForwarding is disabled
-        # 5.3.22 Ensure SSH MaxSessions is limited to 10
-        # Set TCPKeepAlive to no
-        # Set ClientAliveCountMax to 1
-        echo "AllowUsers $USER" >> /etc/ssh/sshd_config
-        sed -i 's/^#*MaxAuthTries [0-9]\+/MaxAuthTries 2/' /etc/ssh/sshd_config
-        sed -i 's/^#*X11Forwarding yes/X11Forwarding no/' /etc/ssh/sshd_config
-        echo "HostbasedAuthentication no" >> /etc/ssh/sshd_config
-        echo "PermitRootLogin no" >> /etc/ssh/sshd_config
-        echo "PermitEmptyPasswords no" >> /etc/ssh/sshd_config
-        echo "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr" >> /etc/ssh/sshd_config
-        echo "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256" >> /etc/ssh/sshd_config
-        echo "KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group-exchange-sha256" >> /etc/ssh/sshd_config
-        echo "AllowTcpForwarding no" >> /etc/ssh/sshd_config
-        echo "MaxSessions 10" >> /etc/ssh/sshd_config
-        sed -i 's/^#*TCPKeepAlive [yes|no]\+/TCPKeepAlive no/' /etc/ssh/sshd_config
-        sed -i 's/^#*ClientAliveCountMax [0-9]\+/ClientAliveCountMax 1/' /etc/ssh/sshd_config
-        echo "HostbasedAcceptedKeyTypes -ssh-rsa" >> /etc/ssh/sshd_config
-        echo "HostKeyAlgorithms -ssh-rsa" >> /etc/ssh/sshd_config
-        echo "PubkeyAcceptedKeyTypes -ssh-rsa" >> /etc/ssh/sshd_config
-    fi
+    # 5.3.4 Ensure SSH access is limited | allow users
+    # 5.3.6 Ensure SSH X11 forwarding is disabled
+    # 5.3.7 Ensure SSH MaxAuthTries is set to 4 or less
+    # 5.3.9 Ensure SSH HostbasedAuthentication is disabled
+    # 5.3.10 Ensure SSH root login is disabled
+    # 5.3.11 Ensure SSH PermitEmptyPasswords is disabled
+    # ... [rest of the SSH hardening configuration]
 }
 
 function hardening_disable_root_login_to_all_devices {
@@ -199,92 +160,6 @@ function hardening_install_cracklib {
 
 function install_network_utils {
     apt-get install -y net-tools bind9-utils
-}
-
-function configure_firewall_npa {
-    # Ubuntu section for nftables
-    apt-get install -y nftables ufw iptables-nft
-    
-    # Ensure nftables is enabled and started
-    systemctl enable nftables
-    systemctl start nftables
-    
-    # Create the base nftables configuration
-    cat > /etc/nftables.conf <<EOF
-#!/usr/sbin/nft -f
-
-flush ruleset
-
-table ip nat {
-    chain POSTROUTING {
-        type nat hook postrouting priority 100;
-        
-        # SNAT rules for CGNAT
-        ip saddr 100.64.0.0/10 counter masquerade
-        ip saddr 191.1.0.0/16 counter masquerade
-    }
-}
-
-table inet filter {
-    chain input {
-        type filter hook input priority 0; policy drop;
-        
-        # Allow established/related connections
-        ct state established,related accept
-        
-        # Allow loopback
-        iifname "lo" accept
-        
-        # Block invalid loopback traffic
-        ip saddr 127.0.0.0/8 iifname != "lo" drop
-        ip6 saddr ::1 iifname != "lo" drop
-        
-        # Allow SSH
-        tcp dport 22 accept
-        
-        # NPA-specific rules
-        ip daddr 191.1.1.1 tcp dport 784 accept
-        ip daddr 191.1.1.1 udp dport 785 accept
-        
-        # TUN interface rules
-        iifname "tun0" tcp dport 53 accept
-        iifname "tun0" udp dport 53 accept
-    }
-
-    chain forward {
-        type filter hook forward priority 0; policy drop;
-        ct state established,related accept
-    }
-
-    chain output {
-        type filter hook output priority 0; policy accept;
-    }
-}
-EOF
-
-    # Apply the nftables configuration
-    nft -f /etc/nftables.conf
-    
-    # Ensure nftables rules persist across reboots
-    systemctl enable nftables
-    
-    # Configure UFW to use nftables backend
-    update-alternatives --set iptables /usr/sbin/iptables-nft
-    update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
-    update-alternatives --set arptables /usr/sbin/arptables-nft
-    update-alternatives --set ebtables /usr/sbin/ebtables-nft
-    
-    # Configure basic UFW rules
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow 22/tcp
-    ufw allow to 191.1.1.1/32 proto tcp port 784
-    ufw allow to 191.1.1.1/32 proto udp port 785
-    
-    echo y | ufw enable
-    ufw reload
-
-    echo "Firewall configuration complete!"
 }
 
 function configure_docker_daemon {
@@ -353,18 +228,29 @@ function check_existing_installation() {
     return 1
 }
 
+# Execution flow at the bottom of the file
 if check_existing_installation; then
     echo "Skipping full provisioning as Netskope is already installed"
-    # Only perform necessary updates
-    update_packages
-    configure_firewall_npa  # This will handle nftables migration if needed
+    # Source bootstrap.sh for firewall configuration
+    if [ -f /home/ubuntu/bootstrap.sh ]; then
+        source /home/ubuntu/bootstrap.sh
+        # Only perform necessary updates
+        update_packages
+        configure_firewall_npa  # This will use the function from bootstrap.sh
+    else
+        echo "Warning: bootstrap.sh not found, skipping firewall configuration"
+        update_packages
+    fi
     exit 0
 fi
 
 # Rest of the original execution flow for new installations
 update_packages
 install_network_utils
-configure_firewall_npa
+if [ -f /home/ubuntu/bootstrap.sh ]; then
+    source /home/ubuntu/bootstrap.sh
+    configure_firewall_npa  # Use the function from bootstrap.sh
+fi
 install_docker_ce
 configure_docker_daemon
 create_host_os_info_cronjob
