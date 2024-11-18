@@ -267,6 +267,7 @@ function configure_firewall_npa {
         # Step 3: Apply SNAT for CGNAT source range
         echo "Applying SNAT for CGNAT source range..."
         iptables -t nat -A POSTROUTING -s 100.64.0.0/10 -j MASQUERADE
+        iptables -t nat -A POSTROUTING -s 191.1.0.0/16 -j MASQUERADE
 
         # Step 4: Persist iptables rules
         if command -v netfilter-persistent &> /dev/null; then
