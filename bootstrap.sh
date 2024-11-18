@@ -145,12 +145,52 @@ cleanup_systemd_service() {
     systemctl daemon-reload
 }
 
-check_reboot() {
+function check_reboot() {
     if [ -f /var/run/reboot-required ]; then
-        echo "Reboot required. Rebooting..."
-        reboot
+        log_progress "Reboot required. System will reboot in 5 seconds..."
+        sync
+        log_step "reboot_initiated" "System reboot required and initiated"
+        sleep 5
+        systemctl reboot
         exit 0
     fi
+    return 0
+}
+
+# Modify the setup_reboot_handler function
+function setup_reboot_handler() {
+    log_progress "Setting up reboot handler..."
+    mkdir -p /var/lib/system-upgrade
+    
+    cat > /var/lib/system-upgrade/upgrade-resume.sh << 'EOF'
+#!/bin/bash
+if [ -f /var/log/upgrade_progress.log.current ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Resuming upgrade after reboot..." >> /var/log/upgrade_progress.log
+    /usr/local/bin/upgrade-script.sh
+fi
+EOF
+    chmod +x /var/lib/system-upgrade/upgrade-resume.sh
+    
+    cat > /etc/systemd/system/upgrade-resume.service << EOF
+[Unit]
+Description=Resume system upgrade after reboot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/system-upgrade/upgrade-resume.sh
+RemainAfterExit=yes
+StandardOutput=append:/var/log/upgrade_progress.log
+StandardError=append:/var/log/upgrade_progress.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable upgrade-resume.service
+    log_progress "Reboot handler setup completed"
 }
 
 # Fix DNS Configuration
@@ -391,6 +431,16 @@ function main() {
         echo "Please run as root"
         exit 1
     fi
+
+    # Create directory for upgrade scripts
+    mkdir -p /var/lib/system-upgrade
+
+    # Copy this script to a permanent location
+    cp "$0" /usr/local/bin/upgrade-script.sh
+    chmod +x /usr/local/bin/upgrade-script.sh
+
+    # Setup reboot handler
+    setup_reboot_handler
 
     # Initialize logging
     log_progress "Starting upgrade process"
