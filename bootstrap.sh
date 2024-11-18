@@ -383,7 +383,7 @@ function main() {
     if [ "$EUID" -ne 0 ]; then
         echo "Please run as root"
         exit 1
-    }
+    fi
 
     # Initialize logging
     log_progress "Starting upgrade process"
@@ -438,4 +438,5 @@ function main() {
     fi
 }
 
+# Call main at the end
 main
