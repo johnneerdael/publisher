@@ -27,7 +27,10 @@ function handle_pending_reboot() {
         set_stage "pending_reboot"
         # Ensure our script runs again after reboot
         create_systemd_service
-        reboot
+        # Force sync to ensure all writes are complete
+        sync
+        # Schedule a reboot in 1 minute to allow systemd to complete setup
+        shutdown -r +1 "System will reboot in 1 minute to continue upgrade process..."
         exit 0
     fi
 }
@@ -91,17 +94,23 @@ create_systemd_service() {
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Resume Ubuntu Upgrade After Reboot
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-ExecStart=/home/ubuntu/bootstrap.sh
-Restart=always
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'chmod +x /home/ubuntu/bootstrap.sh && /home/ubuntu/bootstrap.sh'
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1800
 
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable ubuntu-upgrade
+    systemctl start ubuntu-upgrade
 }
 
 cleanup_systemd_service() {
